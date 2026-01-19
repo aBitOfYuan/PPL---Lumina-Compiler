@@ -3,6 +3,8 @@ from tkinter import ttk, filedialog, messagebox
 import customtkinter as ctk
 import re
 import os
+import csv
+from datetime import datetime
 from compiler.lexer import LuminaLexer
 
 # --- CONFIGURATION ---
@@ -347,8 +349,20 @@ class LuminaIDE:
         header_frame = ctk.CTkFrame(self.table_frame, fg_color="#252526", height=30, corner_radius=0)
         header_frame.pack(fill=tk.X)
         
+        # Title label
         lbl_tok = ctk.CTkLabel(header_frame, text="  Tokens  ", font=("Segoe UI", 11, "bold"), text_color="#cccccc")
         lbl_tok.pack(side=tk.LEFT, padx=10)
+        
+        # Add save table button on the right
+        self.btn_save_table = ctk.CTkButton(header_frame, text="💾 Save Tokens", 
+                                          command=self.save_token_table,
+                                          width=120, height=25,
+                                          fg_color="transparent", 
+                                          border_width=1, 
+                                          border_color="#3e3e42",
+                                          hover_color="#3e3e42",
+                                          font=("Segoe UI", 10))
+        self.btn_save_table.pack(side=tk.RIGHT, padx=10, pady=2)
 
         # Treeview Style (Dark)
         style = ttk.Style()
@@ -441,13 +455,70 @@ class LuminaIDE:
                 messagebox.showerror("Error", f"Failed to open file: {str(e)}")
 
     def save_current_file(self):
-        """Save current file"""
+        """Save current file - BOTH CODE AND TOKEN TABLE"""
         current_tab_id = self.tabbed_editor.get_current_tab_id()
         if current_tab_id:
+            # First save the code file
             self.save_file(current_tab_id)
+            
+            # Then check if there are tokens to save
+            tokens = []
+            for child in self.token_tree.get_children():
+                item = self.token_tree.item(child)
+                values = item['values']
+                if values:
+                    # Ensure all values are strings
+                    tokens.append([
+                        str(values[0]) if values[0] is not None else "1",
+                        str(values[1]) if values[1] is not None else "UNKNOWN",
+                        str(values[2]) if values[2] is not None else ""
+                    ])
+            
+            if tokens:
+                # Ask if user wants to save token table too
+                response = messagebox.askyesno(
+                    "Save Token Table",
+                    "Do you also want to save the token table?"
+                )
+                
+                if response:
+                    # Save token table in same location as code file
+                    tab_data = self.tabbed_editor.tabs[current_tab_id]
+                    if tab_data['filepath']:
+                        code_file_path = tab_data['filepath']
+                        base_name = os.path.splitext(os.path.basename(code_file_path))[0]
+                        parent_dir = os.path.dirname(code_file_path)
+                        
+                        # Create token table filename based on code filename
+                        token_file_path = os.path.join(parent_dir, f"{base_name}_tokens.txt")
+                        
+                        # Ask for confirmation or modification
+                        token_file_path = filedialog.asksaveasfilename(
+                            defaultextension=".txt",
+                            initialfile=f"{base_name}_tokens.txt",
+                            initialdir=parent_dir,
+                            filetypes=[
+                                ("Text Files", "*.txt"),
+                                ("CSV Files", "*.csv"),
+                                ("All Files", "*.*")
+                            ],
+                            title="Save Token Table As"
+                        )
+                        
+                        if token_file_path:
+                            try:
+                                if token_file_path.lower().endswith('.csv'):
+                                    self._save_as_csv(token_file_path, tokens)
+                                else:
+                                    self._save_as_text(token_file_path, tokens)
+                                
+                                self.log_console(f"Token table saved to: {os.path.basename(token_file_path)}")
+                                
+                            except Exception as e:
+                                messagebox.showerror("Error", f"Failed to save token table: {str(e)}")
 
     def save_file(self, tab_id):
-        """Save specific tab's content"""
+        """Save specific tab's content (code only)"""
         if tab_id not in self.tabbed_editor.tabs:
             return
             
@@ -471,10 +542,134 @@ class LuminaIDE:
                 file.write(content)
             
             self.tabbed_editor.set_tab_changed(tab_id, False)
-            self.log_console(f"Saved: {tab_data['filename']}")
+            self.log_console(f"Code saved: {tab_data['filename']}")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file: {str(e)}")
+
+    # -------------------------------------------------------------------------
+    # TOKEN TABLE SAVE OPERATIONS
+    # -------------------------------------------------------------------------
+    def save_token_table(self):
+        """Save ONLY the token table to a file (NOT the program code)"""
+        # Get all tokens from the treeview
+        tokens = []
+        for child in self.token_tree.get_children():
+            item = self.token_tree.item(child)
+            values = item['values']
+            if values:
+                # Ensure all values are strings
+                tokens.append([
+                    str(values[0]) if values[0] is not None else "1",
+                    str(values[1]) if values[1] is not None else "UNKNOWN",
+                    str(values[2]) if values[2] is not None else ""
+                ])
+        
+        if not tokens:
+            messagebox.showwarning("Warning", "No tokens to save! Run analysis first.")
+            return
+        
+        # Ask for save location
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[
+                ("Text Files", "*.txt"),
+                ("CSV Files", "*.csv"),
+                ("All Files", "*.*")
+            ],
+            title="Save Token Table As"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Determine file format based on extension
+            if file_path.lower().endswith('.csv'):
+                self._save_as_csv(file_path, tokens)
+            else:
+                self._save_as_text(file_path, tokens)
+            
+            self.log_console(f"Token table saved to: {os.path.basename(file_path)}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save token table: {str(e)}")
+
+    def _save_as_text(self, file_path, tokens):
+        """Save tokens as formatted text file"""
+        with open(file_path, 'w', encoding='utf-8') as f:
+            # Write header
+            f.write("=" * 60 + "\n")
+            f.write("LEXICAL ANALYSIS TOKEN TABLE\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Generated on: {self._get_current_timestamp()}\n")
+            f.write("-" * 60 + "\n")
+            f.write(f"{'Line':<6} | {'Token Type':<20} | {'Lexeme'}\n")
+            f.write("-" * 60 + "\n")
+            
+            # Write tokens
+            for line, token_type, lexeme in tokens:
+                # All values are already strings, but ensure for safety
+                line_str = str(line) if not isinstance(line, str) else line
+                token_type_str = str(token_type) if not isinstance(token_type, str) else token_type
+                lexeme_str = str(lexeme) if not isinstance(lexeme, str) else lexeme
+                
+                # Format for better readability
+                formatted_lexeme = lexeme_str
+                if len(lexeme_str) > 30:
+                    formatted_lexeme = lexeme_str[:27] + "..."
+                
+                f.write(f"{line_str:<6} | {token_type_str:<20} | {formatted_lexeme}\n")
+            
+            # Write summary
+            f.write("-" * 60 + "\n")
+            f.write(f"Total tokens: {len(tokens)}\n")
+            f.write("=" * 60 + "\n")
+            
+            # Add statistics
+            self._add_token_statistics(f, tokens)
+
+    def _save_as_csv(self, file_path, tokens):
+        """Save tokens as CSV file"""
+        with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Write header
+            writer.writerow(["Line", "Token Type", "Lexeme"])
+            
+            # Write tokens
+            for token in tokens:
+                writer.writerow(token)
+            
+            # Add summary/metadata as comments
+            f.write(f"\n# Generated on: {self._get_current_timestamp()}\n")
+            f.write(f"# Total tokens: {len(tokens)}\n")
+            
+            # Add statistics
+            self._add_token_statistics(f, tokens, csv_format=True)
+
+    def _get_current_timestamp(self):
+        """Get formatted current timestamp"""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _add_token_statistics(self, file_handle, tokens, csv_format=False):
+        """Add token statistics to the file"""
+        # Count token types
+        token_counts = {}
+        for _, token_type, _ in tokens:
+            # Convert token_type to string for consistent counting
+            token_type_str = str(token_type) if not isinstance(token_type, str) else token_type
+            token_counts[token_type_str] = token_counts.get(token_type_str, 0) + 1
+        
+        if csv_format:
+            file_handle.write("# Token Statistics:\n")
+            for token_type, count in sorted(token_counts.items()):
+                file_handle.write(f"# {token_type}: {count}\n")
+        else:
+            file_handle.write("\nToken Statistics:\n")
+            file_handle.write("-" * 40 + "\n")
+            for token_type, count in sorted(token_counts.items()):
+                file_handle.write(f"{token_type:<20}: {count:>4}\n")
 
     # -------------------------------------------------------------------------
     # LOGIC
