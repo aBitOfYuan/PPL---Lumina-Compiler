@@ -114,7 +114,7 @@ class LuminaLexer:
                 self.line_number += value.count('\n')
                 continue
             
-            # --- Error Handling ---
+            # --- Error Handling (Regex based) ---
             elif kind == 'UNTERM_STRING':
                 self.errors.append(f"Lexical Error: Unterminated string literal on line {self.line_number}")
                 self.tokens.append(Token('INVALID', value, self.line_number))
@@ -126,14 +126,20 @@ class LuminaLexer:
             
             # --- Identifier Classification ---
             if kind == 'WORD':
+                # 1. Check for Invalid Keywords (like 'print')
+                if value == 'print':
+                    self.errors.append(f"Lexical Error: Invalid keyword '{value}' on line {self.line_number}. Use 'display' instead.")
+                    self.tokens.append(Token('INVALID', value, self.line_number))
+                    continue # Skip the rest, don't process as variable
+
+                # 2. Check Standard Keywords
                 if value in self.keywords:
                     kind = 'KEYWORD'
                 elif value in self.reserved_words:
                     kind = 'RESERVED_WORD'
                 elif value in self.noise_words:
                     kind = 'NOISE_WORD'
-                # Check for Types (PascalCase) vs Variables (snake_case)
-                # Note: We treat words starting with _ as variables.
+                # 3. Check Naming Conventions
                 elif value[0].isupper():
                     kind = 'ID_TYPE'
                 else:
