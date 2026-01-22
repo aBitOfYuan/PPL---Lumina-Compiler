@@ -88,13 +88,16 @@ class LuminaLexer:
             ('ERR_FLOAT',        r'\d+\.\d+(\.\d+)+'),
             ('ERR_SINGLE_QUOTE', r"'[^']*'"),
             ('ERR_ID_DIGIT',     r'\d+[a-zA-Z_]+'),
-            ('ERR_ID_HYPHEN',    r'[a-zA-Z_]\w*-\w*'),
+            
+            # [FIXED] changed \w* to \w+ to ensure it only catches 'var-name' 
+            # and ignores 'var--' (decrement) or 'var -' (subtraction)
+            ('ERR_ID_HYPHEN',    r'[a-zA-Z_]\w*-\w+'), 
 
             # --- 3. Invalid Operators ---
             ('ERR_OP_TRIPLE_EQ', r'==='),
             ('ERR_OP_REL_REV',   r'=<'),
             ('ERR_OP_DBL_NOT',   r'!!'),
-            ('ERR_OP_DBL_DASH',  r'--(?=\d)'),
+            ('ERR_OP_DBL_DASH',  r'--(?=\d)'), # Catches --5 but allows valid --
 
             # --- 4. Valid Literals ---
             ('STRING',           r'"(\\.|[^"\\])*"'),
@@ -125,7 +128,7 @@ class LuminaLexer:
             ('OP_BIT_NOT',       r'~'),
 
             # --- 6. Symbols ---
-            ('SYMBOL',           r'[+\-*/%=!><(){}\[\],;:\.]'),
+            ('SYMBOL',           r'[+\-*/%=!><(){}\[\],;:\.\?]'),
 
             # --- 7. Illegal Characters ---
             ('ERR_ILLEGAL_CHAR', r'[@#]'),
@@ -233,9 +236,6 @@ class LuminaLexer:
         # 2. Valid Keywords (Exact Match)
         if value in self.keywords:
             # --- STRICT KEYWORD PROTECTION ---
-            
-            # Identify predecessors that STRICTLY forbid a following keyword.
-            # NOTE: We removed 'var' and 'let' from here to allow 'var float'.
             strict_predecessors = {'func', 'struct', 'type'}.union(self.primitive_types)
 
             if last_keyword in strict_predecessors:
@@ -244,7 +244,6 @@ class LuminaLexer:
                     return 'KEYWORD'
                 
                 # Exception 2: Contracts are allowed after primitive types
-                # e.g. "-> bool requires"
                 contract_keywords = {'requires', 'ensures', 'invariant'}
                 if last_keyword in self.primitive_types and value in contract_keywords:
                     return 'KEYWORD'
@@ -304,14 +303,11 @@ class LuminaLexer:
             return 'ID_VAR_TYPE'
 
         # CASE 3: Variable Identifier (after primitive types only)
-        # [MODIFIED]: We REMOVED 'var' and 'let' from here.
-        # Strict snake_case checking applies only to primitive definitions (e.g. 'int x').
-        # 'var' can be followed by a Type (PascalCase) OR a variable (snake_case), 
-        # so we let it fall through to the fallback logic.
         if last_keyword in self.primitive_types:
-            if any(c.isupper() for c in value):
-                self._error(f"Invalid variable identifier '{value}'. Must be snake_case (no uppercase).")
-                return 'INVALID'
+            # [UPDATED] Relaxed rule to allow camelCase like 'isDarkmode'
+            # if any(c.isupper() for c in value):
+            #     self._error(f"Invalid variable identifier '{value}'. Must be snake_case (no uppercase).")
+            #     return 'INVALID'
             return 'ID_VAR'
 
         # ---------------------------------------------------------------------
@@ -319,17 +315,17 @@ class LuminaLexer:
         # ---------------------------------------------------------------------
 
         # If it looks like a Type (PascalCase), classify as ID_VAR_TYPE
-        # This will catch 'BankAccount' in 'var BankAccount alice'
         if value[0].isupper():
             if '_' in value:
                 self._error(f"Invalid Type identifier '{value}'. Underscores allowed only in snake_case variables.")
                 return 'INVALID'
             return 'ID_VAR_TYPE'
 
-        # If it looks like a Variable (snake_case), classify as ID_VAR
-        if any(c.isupper() for c in value):
-             self._error(f"Invalid variable identifier '{value}'. Must be snake_case.")
-             return 'INVALID'
+        # If it looks like a Variable...
+        # [UPDATED] Relaxed rule to allow camelCase
+        # if any(c.isupper() for c in value):
+        #      self._error(f"Invalid variable identifier '{value}'. Must be snake_case.")
+        #      return 'INVALID'
         
         return 'ID_VAR'
 
