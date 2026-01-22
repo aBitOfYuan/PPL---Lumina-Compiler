@@ -212,7 +212,8 @@ class TabbedEditor(ctk.CTkFrame):
         patterns = [
             ("COMMENT", r'//.*|/\*[\s\S]*?\*/'),
             ("STRING", r'"[^"]*"'),
-            ("KEYWORD", r'\b(func|main|let|var|struct|if|else|switch|case|default|break|while|do|for|display|read|return)\b'),
+            # UPDATED: Added 'type' inside the parentheses 👇
+            ("KEYWORD", r'\b(func|main|let|var|struct|type|if|else|switch|case|default|break|while|do|for|display|read|return)\b'),
             ("CONTRACT", r'\b(requires|ensures|invariant)\b'),
             ("TYPE", r'\b(int|float|double|string|bool|void|char)\b|[A-Z][a-zA-Z0-9_]*'),
             ("NUMBER", r'\b\d+\b'),

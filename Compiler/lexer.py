@@ -1,4 +1,5 @@
 import re
+import difflib
 
 # -----------------------------------------------------------------------------
 # Token Definition
@@ -10,7 +11,7 @@ class Token:
         self.line = line
 
     def __repr__(self):
-        return f"Line {self.line:<3} | {self.type:<18} | {self.value}"
+        return f"Line {self.line:<3} | {self.type:<20} | {self.value}"
 
 
 # -----------------------------------------------------------------------------
@@ -25,26 +26,47 @@ class LuminaLexer:
 
         # ---------------- Language Sets ----------------
 
-        # Keywords (control + data types)
+        # Keywords
         self.keywords = {
-            # Control / structure
+            # Declarations & Structures
             'func', 'main', 'let', 'var', 'type', 'struct', 'void',
-            'requires', 'ensures', 'invariant', 'old', 'result',
-            'if', 'else', 'switch', 'case', 'default', 'break',
-            'while', 'do', 'for', 'return', 'display', 'read',
+            
+            # Primitive Types
+            'int', 'char', 'bool', 'double', 'float', 'string',
 
-            # Data types
-            'int', 'char', 'bool', 'double', 'float', 'string'
+            # Contracts & Verification
+            'requires', 'ensures', 'invariant', 'old', 'result',
+            
+            # Control Flow
+            'if', 'else', 'switch', 'case', 'default', 'break',
+            'while', 'do', 'for', 'return',
+            
+            # I/O
+            'display', 'read'
         }
 
         # Reserved literals
         self.reserved_words = {'true', 'false', 'null'}
 
-        # Noise words
+        # Noise words (Context-sensitive)
         self.noise_words = {'that', 'the', 'is'}
+        
+        # Valid Noise Word Contexts: { PreviousKeyword : RequiredNoise }
+        self.valid_noise_contexts = {
+            'requires': 'that',
+            'ensures':  'the',
+            'type':     'is'
+        }
 
-        # Invalid keywords
-        self.invalid_keywords = {'print'}
+        # Invalid keywords/Identifiers explicitly flagged in requirements
+        self.invalid_keywords = {
+            'function': "Invalid keyword. Use 'func'.",
+            'elseif':   "Invalid keyword. Use 'else if'.",
+            'print':    "Invalid keyword. Use 'display'."
+        }
+        
+        # Set of primitive types for context checking
+        self.primitive_types = {'int', 'char', 'bool', 'double', 'float', 'string'}
 
     # -----------------------------------------------------------------------------
     # Tokenization
@@ -53,54 +75,70 @@ class LuminaLexer:
         self.tokens.clear()
         self.errors.clear()
         self.line_number = 1
+        
+        last_keyword = None 
 
         rules = [
-            # Comments
-            ('COMMENT_MULTI',   r'/\*[\s\S]*?\*/'),
-            ('COMMENT_SINGLE',  r'//.*'),
+            # --- 1. Comments ---
+            ('COMMENT_MULTI',    r'/\*[\s\S]*?\*/'),
+            ('COMMENT_SINGLE',   r'//.*'),
+            ('ERR_UNTERM_CMT',   r'/\*[\s\S]*'),
 
-            # Literals
-            ('STRING',          r'"(\\.|[^"\\])*"'),
-            ('UNTERM_STRING',   r'"[^"\n]*'),
-            ('FLOAT',           r'\d+\.\d+'),
-            ('INTEGER',         r'\d+'),
+            # --- 2. Invalid Literals & Identifiers ---
+            ('ERR_FLOAT',        r'\d+\.\d+(\.\d+)+'),
+            ('ERR_SINGLE_QUOTE', r"'[^']*'"),
+            ('ERR_ID_DIGIT',     r'\d+[a-zA-Z_]+'),
+            ('ERR_ID_HYPHEN',    r'[a-zA-Z_]\w*-\w*'),
 
-            # Operators (longest first)
-            ('OP_ARROW',        r'->'),
-            ('OP_EQ',           r'=='),
-            ('OP_NEQ',          r'!='),
-            ('OP_GE',           r'>='),
-            ('OP_LE',           r'<='),
-            ('OP_AND',          r'&&'),
-            ('OP_OR',           r'\|\|'),
-            ('OP_INC',          r'\+\+'),
-            ('OP_DEC',          r'--'),
-            ('OP_ADD_ASS',      r'\+='),
-            ('OP_SUB_ASS',      r'-='),
-            ('OP_MUL_ASS',      r'\*='),
-            ('OP_DIV_ASS',      r'/='),
-            ('OP_MOD_ASS',      r'%='),
+            # --- 3. Invalid Operators ---
+            ('ERR_OP_TRIPLE_EQ', r'==='),
+            ('ERR_OP_REL_REV',   r'=<'),
+            ('ERR_OP_DBL_NOT',   r'!!'),
+            ('ERR_OP_DBL_DASH',  r'--(?=\d)'),
 
-            # Bitwise
-            ('OP_SHL',          r'<<'),
-            ('OP_SHR',          r'>>'),
-            ('OP_BIT_AND',      r'&'),
-            ('OP_BIT_OR',       r'\|'),
-            ('OP_BIT_XOR',      r'\^'),
-            ('OP_BIT_NOT',      r'~'),
+            # --- 4. Valid Literals ---
+            ('STRING',           r'"(\\.|[^"\\])*"'),
+            ('UNTERM_STRING',    r'"[^"\n]*'),
+            ('FLOAT',            r'\d+\.\d+'),
+            ('INTEGER',          r'\d+'),
 
-            # Symbols
-            ('SYMBOL',          r'[+\-*/%=!><(){}\[\],;:\.]'),
+            # --- 5. Valid Operators ---
+            ('OP_ARROW',         r'->'),
+            ('OP_EQ',            r'=='),
+            ('OP_NEQ',           r'!='),
+            ('OP_GE',            r'>='),
+            ('OP_LE',            r'<='),
+            ('OP_AND',           r'&&'),
+            ('OP_OR',            r'\|\|'),
+            ('OP_INC',           r'\+\+'),
+            ('OP_DEC',           r'--'),
+            ('OP_ADD_ASS',       r'\+='),
+            ('OP_SUB_ASS',       r'-='),
+            ('OP_MUL_ASS',       r'\*='),
+            ('OP_DIV_ASS',       r'/='),
+            ('OP_MOD_ASS',       r'%='),
+            ('OP_SHL',           r'<<'),
+            ('OP_SHR',           r'>>'),
+            ('OP_BIT_AND',       r'&'),
+            ('OP_BIT_OR',        r'\|'),
+            ('OP_BIT_XOR',       r'\^'),
+            ('OP_BIT_NOT',       r'~'),
 
-            # Identifiers / Keywords
-            ('WORD',            r'[a-zA-Z_][a-zA-Z0-9_]*'),
+            # --- 6. Symbols ---
+            ('SYMBOL',           r'[+\-*/%=!><(){}\[\],;:\.]'),
 
-            # Whitespace
-            ('NEWLINE',         r'\n'),
-            ('SKIP',            r'[ \t]+'),
+            # --- 7. Illegal Characters ---
+            ('ERR_ILLEGAL_CHAR', r'[@#]'),
 
-            # Catch-all
-            ('MISMATCH',        r'.'),
+            # --- 8. Identifiers / Keywords ---
+            ('WORD',             r'[a-zA-Z_][a-zA-Z0-9_]*'),
+
+            # --- 9. Whitespace ---
+            ('NEWLINE',          r'\n'),
+            ('SKIP',             r'[ \t]+'),
+
+            # --- 10. Catch-all ---
+            ('MISMATCH',         r'.'),
         ]
 
         master_regex = '|'.join(f'(?P<{name}>{pattern})' for name, pattern in rules)
@@ -109,60 +147,169 @@ class LuminaLexer:
             kind = match.lastgroup
             value = match.group()
 
-            # --- Whitespace & Comments ---
             if kind == 'NEWLINE':
                 self.line_number += 1
                 continue
-
             if kind in {'SKIP', 'COMMENT_SINGLE'}:
                 continue
-
             if kind == 'COMMENT_MULTI':
                 self.line_number += value.count('\n')
                 continue
 
-            # --- Errors ---
+            # --- Error Handling ---
+            if kind == 'ERR_UNTERM_CMT':
+                self._error("Unterminated multi-line comment")
+                self.line_number += value.count('\n')
+                self._add_token('INVALID', value)
+                continue
             if kind == 'UNTERM_STRING':
                 self._error("Unterminated string literal")
                 self._add_token('INVALID', value)
                 continue
-
+            if kind == 'ERR_FLOAT':
+                self._error(f"Invalid numeric literal '{value}'")
+                self._add_token('INVALID', value)
+                continue
+            if kind == 'ERR_SINGLE_QUOTE':
+                self._error(f"Invalid string literal '{value}'. Strings must use double quotes.")
+                self._add_token('INVALID', value)
+                continue
+            if kind == 'ERR_ID_DIGIT':
+                self._error(f"Invalid identifier '{value}'. Cannot start with a digit.")
+                self._add_token('INVALID', value)
+                continue
+            if kind == 'ERR_ID_HYPHEN':
+                self._error(f"Invalid identifier '{value}'. Hyphens are not allowed.")
+                self._add_token('INVALID', value)
+                continue
+            if kind == 'ERR_ILLEGAL_CHAR':
+                self._error(f"Illegal character '{value}'.")
+                self._add_token('INVALID', value)
+                continue
+            if kind.startswith('ERR_OP'):
+                self._error(f"Invalid operator '{value}'.")
+                self._add_token('INVALID', value)
+                continue
             if kind == 'MISMATCH':
                 self._error(f"Unexpected character '{value}'")
                 self._add_token('INVALID', value)
                 continue
 
-            # --- Identifier Classification ---
+            # --- Word Classification ---
             if kind == 'WORD':
-                kind = self._classify_word(value)
+                classification = self._classify_word(value, last_keyword)
+                
+                # Context-Sensitive Noise Word Check
+                if classification == 'NOISE_WORD':
+                    expected_noise = self.valid_noise_contexts.get(last_keyword)
+                    if expected_noise != value:
+                        self._error(f"Invalid noise word use. '{value}' is not valid after '{last_keyword}'.")
+                        classification = 'INVALID'
+                
+                # Update Context
+                if classification == 'KEYWORD':
+                    last_keyword = value
+                elif classification != 'NOISE_WORD':
+                    last_keyword = None
+
+                kind = classification
+            else:
+                last_keyword = None
 
             self._add_token(kind, value)
 
-        # End of File
         self.tokens.append(Token('EOF', 'EOF', self.line_number))
         return self.tokens
 
     # -----------------------------------------------------------------------------
     # Helper Methods
     # -----------------------------------------------------------------------------
-    def _classify_word(self, value):
+    def _classify_word(self, value, last_keyword):
+        # 1. Invalid Keywords (Explicitly forbidden)
         if value in self.invalid_keywords:
-            self._error(f"Invalid keyword '{value}'. Use 'display' instead.")
+            self._error(self.invalid_keywords[value])
             return 'INVALID'
-
+        
+        # 2. Valid Keywords (Exact Match)
         if value in self.keywords:
             return 'KEYWORD'
 
+        # 3. Reserved Literals
         if value in self.reserved_words:
             return 'RESERVED_WORD'
 
+        # 4. Noise Words
         if value in self.noise_words:
             return 'NOISE_WORD'
 
-        if value[0].isupper():
-            return 'ID_TYPE'
+        # ---------------------------------------------------------------------
+        # STRICT KEYWORD PROTECTION (Must happen BEFORE Context Checks)
+        # ---------------------------------------------------------------------
+        # This prevents 'whille' from being accepted as a variable name.
 
-        return 'IDENTIFIER'
+        # A. Case Sensitivity Check (e.g., 'While' vs 'while')
+        if value.lower() in self.keywords:
+             self._error(f"Keywords are case-sensitive. Did you mean '{value.lower()}'?")
+             return 'INVALID'
+
+        # B. Typo Detection (e.g., 'whille' vs 'while')
+        all_reserved = list(self.keywords) + list(self.reserved_words)
+        matches = difflib.get_close_matches(value, all_reserved, n=1, cutoff=0.8)
+        
+        if matches:
+            # We must ensure we don't flag valid short vars like 'i' as typos of 'if'
+            # Only flag if len > 1 to be safe, or trust the high cutoff.
+            suggestion = matches[0]
+            self._error(f"Invalid lexeme '{value}'. Did you mean '{suggestion}'?")
+            return 'INVALID'
+
+        # ---------------------------------------------------------------------
+        # CONTEXT ENFORCEMENT (Assign Specific ID Tokens)
+        # ---------------------------------------------------------------------
+        # Now that we know it's NOT a keyword (or a misspelled one), 
+        # we check if it is a valid Identifier based on where it appears.
+
+        # CASE 1: Function Identifier (after 'func') -> ID_VAR_FUNC
+        if last_keyword == 'func':
+            if any(c.isupper() for c in value):
+                self._error(f"Invalid function identifier '{value}'. Must be snake_case.")
+                return 'INVALID'
+            return 'ID_VAR_FUNC'
+
+        # CASE 2: Type Identifier (after 'type' or 'struct') -> ID_VAR_TYPE
+        if last_keyword in {'type', 'struct'}:
+            if not value[0].isupper():
+                self._error(f"Invalid Type identifier '{value}'. Must start with Uppercase (PascalCase).")
+                return 'INVALID'
+            if '_' in value:
+                self._error(f"Invalid Type identifier '{value}'. Cannot contain underscores.")
+                return 'INVALID'
+            return 'ID_VAR_TYPE'
+
+        # CASE 3: Variable Identifier (after primitive types like 'int', 'bool') -> ID_VAR
+        if last_keyword in self.primitive_types:
+            if any(c.isupper() for c in value):
+                self._error(f"Invalid variable identifier '{value}'. Must be snake_case (no uppercase).")
+                return 'INVALID'
+            return 'ID_VAR'
+
+        # ---------------------------------------------------------------------
+        # FALLBACK (When context is neutral)
+        # ---------------------------------------------------------------------
+
+        # If it looks like a Type (PascalCase), classify as ID_VAR_TYPE
+        if value[0].isupper():
+            if '_' in value:
+                self._error(f"Invalid Type identifier '{value}'. Underscores allowed only in snake_case variables.")
+                return 'INVALID'
+            return 'ID_VAR_TYPE'
+
+        # If it looks like a Variable (snake_case), classify as ID_VAR
+        if any(c.isupper() for c in value):
+             self._error(f"Invalid variable identifier '{value}'. Must be snake_case.")
+             return 'INVALID'
+        
+        return 'ID_VAR'
 
     def _add_token(self, kind, value):
         self.tokens.append(Token(kind, value, self.line_number))
