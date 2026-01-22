@@ -232,6 +232,24 @@ class LuminaLexer:
         
         # 2. Valid Keywords (Exact Match)
         if value in self.keywords:
+            # --- STRICT KEYWORD PROTECTION ---
+            # Even if it matches a keyword, we must check if the context expected an Identifier.
+            # If so, using a keyword here is forbidden.
+            
+            # Contexts where an identifier is required:
+            # 1. After primitive types (e.g. 'int x')
+            # 2. After declarations (e.g. 'func myFunc', 'struct MyStruct')
+            expecting_identifier = self.primitive_types.union({'func', 'struct', 'type', 'var', 'let'})
+
+            if last_keyword in expecting_identifier:
+                # Exception: 'main' is often a keyword but strictly required after 'func' 
+                # as the entry point. We allow it.
+                if last_keyword == 'func' and value == 'main':
+                    return 'KEYWORD'
+                
+                self._error(f"Invalid identifier '{value}'. Keywords cannot be used as variable or function names.")
+                return 'INVALID'
+
             return 'KEYWORD'
 
         # 3. Reserved Literals
@@ -243,7 +261,7 @@ class LuminaLexer:
             return 'NOISE_WORD'
 
         # ---------------------------------------------------------------------
-        # STRICT KEYWORD PROTECTION (Must happen BEFORE Context Checks)
+        # STRICT KEYWORD PROTECTION (Typo/Case Checks)
         # ---------------------------------------------------------------------
         # This prevents 'whille' from being accepted as a variable name.
 
@@ -257,17 +275,15 @@ class LuminaLexer:
         matches = difflib.get_close_matches(value, all_reserved, n=1, cutoff=0.8)
         
         if matches:
-            # We must ensure we don't flag valid short vars like 'i' as typos of 'if'
-            # Only flag if len > 1 to be safe, or trust the high cutoff.
             suggestion = matches[0]
-            self._error(f"Invalid lexeme '{value}'. Did you mean '{suggestion}'?")
-            return 'INVALID'
+            # Avoid flagging short variables like 'i' as typos of 'if'
+            if len(value) > 1: 
+                self._error(f"Invalid lexeme '{value}'. Did you mean '{suggestion}'?")
+                return 'INVALID'
 
         # ---------------------------------------------------------------------
         # CONTEXT ENFORCEMENT (Assign Specific ID Tokens)
         # ---------------------------------------------------------------------
-        # Now that we know it's NOT a keyword (or a misspelled one), 
-        # we check if it is a valid Identifier based on where it appears.
 
         # CASE 1: Function Identifier (after 'func') -> ID_VAR_FUNC
         if last_keyword == 'func':
